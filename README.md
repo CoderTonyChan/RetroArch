@@ -26,3 +26,11 @@ In the Project and Targets list on the left side, choose the RetroArchiOS10 targ
 In the "General" tab, change the "Team" under Signing to be your developer name.
 Set the active scheme to RetroArchiOS10, and select your connected iOS device as the device.
 Run (⌘-R)
+
+
+### Core
+[iOS Jailbroken] — RetroArch 1.8.1 and other emulators (Cydia & Sileo)
+https://forums.libretro.com/t/ios-jailbroken-retroarch-1-8-1-and-other-emulators-cydia-sileo/24668
+
+http://johan.margueritte.free.fr/buildbot/ios-arm64
+http://johan.margueritte.free.fr/buildbot/tvos-arm64/
