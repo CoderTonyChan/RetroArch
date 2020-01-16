@@ -8000,6 +8000,7 @@ static bool setting_append_list(
                &subgroup_info,
                parent_group);
 
+#ifdef HAVE_ACCESSIBILITY
          CONFIG_ACTION(
                list, list_info,
                MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS,
@@ -8007,6 +8008,7 @@ static bool setting_append_list(
                &group_info,
                &subgroup_info,
                parent_group);
+#endif
 
          CONFIG_ACTION(
                list, list_info,
@@ -12323,6 +12325,22 @@ static bool setting_append_list(
                MENU_ENUM_LABEL_MENU_SAVESTATE_RESUME,
                MENU_ENUM_LABEL_VALUE_MENU_SAVESTATE_RESUME,
                menu_savestate_resume,
+               MENU_ENUM_LABEL_VALUE_OFF,
+               MENU_ENUM_LABEL_VALUE_ON,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler,
+               SD_FLAG_ADVANCED
+               );
+
+         CONFIG_BOOL(
+               list, list_info,
+               &settings->bools.menu_insert_disk_resume,
+               MENU_ENUM_LABEL_MENU_INSERT_DISK_RESUME,
+               MENU_ENUM_LABEL_VALUE_MENU_INSERT_DISK_RESUME,
+               DEFAULT_MENU_INSERT_DISK_RESUME,
                MENU_ENUM_LABEL_VALUE_OFF,
                MENU_ENUM_LABEL_VALUE_ON,
                &group_info,

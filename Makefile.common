@@ -7,6 +7,10 @@ ifeq ($(HAVE_STACK_USAGE), 1)
    DEF_FLAGS += -fstack-usage
 endif
 
+ifeq ($(HAVE_CXX11), 1)
+   CXXFLAGS += $(CXX11_CFLAGS)
+endif
+
 ifeq ($(HAVE_GL_CONTEXT),)
    HAVE_GL_CONTEXT = 0
    HAVE_GL_MODERN  = 0
@@ -1746,6 +1750,11 @@ ifeq ($(HAVE_V4L2),1)
    endif
    DEFINES += -DHAVE_V4L2
    LIBS += $(V4L2_LIBS)
+endif
+
+# Accessibility
+ifeq ($(HAVE_ACCESSIBILITY), 1)
+   DEFINES += -DHAVE_ACCESSIBILITY
 endif
 
 # Things that depend on network availability

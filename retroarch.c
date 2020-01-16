@@ -31,8 +31,11 @@
 
 #if defined(DINGUX)
 #include <sys/types.h>
-#include <signal.h>
 #include <unistd.h>
+#endif
+
+#if (defined(__linux__) || defined(__unix__) || defined(DINGUX)) && !defined(EMSCRIPTEN)
+#include <signal.h>
 #endif
 
 #if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0500 || defined(_XBOX)
@@ -223,6 +226,10 @@
 #ifdef HAVE_RUNAHEAD
 #include "runahead/mylist.h"
 #include "runahead/mem_util.h"
+#endif
+
+#ifdef HAVE_ACCESSIBILITY
+#include "accessibility.h"
 #endif
 
 #ifdef HAVE_THREADS
@@ -915,12 +922,21 @@ static midi_driver_t *midi_drivers[] = {
    &midi_null
 };
 
+static void *nullcamera_init(const char *device, uint64_t caps,
+      unsigned width, unsigned height) { return (void*)-1; }
+static void nullcamera_free(void *data) { }
+static bool nullcamera_start(void *data) { return true; }
+static void nullcamera_stop(void *data) { }
+static bool nullcamera_poll(void *a,
+      retro_camera_frame_raw_framebuffer_t b,
+      retro_camera_frame_opengl_texture_t c) { return true; }
+
 static camera_driver_t camera_null = {
-   NULL,
-   NULL,
-   NULL,
-   NULL,
-   NULL,
+   nullcamera_init,
+   nullcamera_free,
+   nullcamera_start,
+   nullcamera_stop,
+   nullcamera_poll,
    "null",
 };
 
@@ -1120,7 +1136,7 @@ static char runtime_content_path[PATH_MAX_LENGTH]               = {0};
 static char runtime_core_path[PATH_MAX_LENGTH]                  = {0};
 static char timestamped_log_file_name[64]                       = {0};
 static char log_file_override_path[PATH_MAX_LENGTH]             = {0};
-static char launch_arguments[4096];
+static char launch_arguments[4096]                              = {0};
 static char current_library_name[1024]                          = {0};
 static char current_library_version[1024]                       = {0};
 static char current_valid_extensions[1024]                      = {0};
@@ -1128,9 +1144,6 @@ static char error_string[255]                                   = {0};
 static char cached_video_driver[32]                             = {0};
 
 /* PATHS */
-
-#define MENU_VALUE_NO_CORE 0x7d5472cbU
-
 struct rarch_dir_list
 {
    struct string_list *list;
@@ -1165,7 +1178,13 @@ static const void *wifi_driver_find_handle(int idx);
 static const void *camera_driver_find_handle(int idx);
 static const void *input_driver_find_handle(int idx);
 static const void *joypad_driver_find_handle(int idx);
+#ifdef HAVE_HID
 static const void *hid_driver_find_handle(int idx);
+#endif
+#ifdef HAVE_ACCESSIBILITY
+static bool is_narrator_running(void);
+static bool accessibility_startup_message(void);
+#endif
 
 static bool midi_driver_read(uint8_t *byte);
 static bool midi_driver_write(uint8_t byte, uint32_t delta_time);
@@ -2474,8 +2493,21 @@ void dir_check_defaults(void)
    }
 }
 
+#ifdef HAVE_ACCESSIBILITY
 /* Is text-to-speech accessibility turned on? */
 static bool accessibility_enabled               = false;
+
+/* Accessibility */
+static int speak_pid = 0;
+
+bool is_accessibility_enabled(void)
+{
+   settings_t *settings              = configuration_settings;
+   if (accessibility_enabled || settings->bools.accessibility_enable)
+      return true;
+   return false;
+}
+#endif
 
 #ifdef HAVE_MENU
 /* MENU INPUT GLOBAL VARIABLES */
@@ -2598,10 +2630,11 @@ bool menu_input_dialog_start_search(void)
 
    input_keyboard_ctl(RARCH_INPUT_KEYBOARD_CTL_LINE_FREE, NULL);
   
+#ifdef HAVE_ACCESSIBILITY
    if (is_accessibility_enabled())
-   {
-      accessibility_speak((char*) msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SEARCH));
-   }
+      accessibility_speak_priority((char*)
+            msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SEARCH), 10);
+#endif
 
    menu_input_dialog_keyboard_buffer   =
       input_keyboard_start_line(menu, menu_input_search_cb);
@@ -2631,7 +2664,9 @@ bool menu_input_dialog_start(menu_input_ctx_line_t *line)
 
    input_keyboard_ctl(RARCH_INPUT_KEYBOARD_CTL_LINE_FREE, NULL);
 
-   accessibility_speak("Keyboard input:");
+#ifdef HAVE_ACCESSIBILITY
+   accessibility_speak_priority("Keyboard input:", 10);
+#endif
 
    menu_input_dialog_keyboard_buffer =
       input_keyboard_start_line(menu, line->cb);
@@ -3167,13 +3202,13 @@ typedef struct input_list_element_t
    unsigned int state_size;
 } input_list_element;
 
+#ifdef HAVE_RUNAHEAD
 static size_t runahead_save_state_size          = 0;
 
 static bool runahead_save_state_size_known      = false;
 static bool request_fast_savestate              = false;
 static bool hard_disable_audio                  = false;
 
-#ifdef HAVE_RUNAHEAD
 /* Save State List for Run Ahead */
 static MyList *runahead_save_state_list         = NULL;
 static MyList *input_state_list                 = NULL;
@@ -3529,7 +3564,9 @@ static bool bsv_movie_check(void);
 static void driver_uninit(int flags);
 static void drivers_init(int flags);
 
+#if defined(HAVE_RUNAHEAD)
 static void core_free_retro_game_info(struct retro_game_info *dest);
+#endif
 static bool core_load(unsigned poll_type_behavior);
 static bool core_unload_game(void);
 
@@ -4617,8 +4654,10 @@ static void handle_translation_cb(
    }
 #endif
 
+#ifdef HAVE_ACCESSIBILITY
    if (text_string && is_accessibility_enabled())
-      accessibility_speak(text_string);
+      accessibility_speak_priority(text_string, 10);
+#endif
 
 finish:
    if (error)
@@ -5069,7 +5108,7 @@ static bool run_translation_service(void)
             settings->arrays.ai_service_url, sizeof(new_ai_service_url));
 
       /* if query already exists in url, then use &'s instead */
-      if (strrchr(new_ai_service_url, '?') != NULL)
+      if (strrchr(new_ai_service_url, '?'))
           separator = '&';
 
       /* source lang */
@@ -5226,19 +5265,23 @@ static void command_event_disk_control_set_eject(bool new_state, bool print_log)
       else
          RARCH_LOG("%s\n", msg);
 
-      /* Only noise in menu. */
-      if (print_log)
-         runloop_msg_queue_push(msg, 1, 180, true, NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+      /* Errors should always be displayed */
+      if (print_log || error)
+         runloop_msg_queue_push(
+               msg, 1, error ? 180 : 60,
+               true, NULL,
+               MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
    }
 }
 
 /**
  * command_event_disk_control_set_index:
  * @idx                : Index of disk to set as current.
+ * @print_log          : Show message onscreen.
  *
  * Sets current disk to @index.
  **/
-static void command_event_disk_control_set_index(unsigned idx)
+static void command_event_disk_control_set_index(unsigned idx, bool print_log)
 {
    unsigned num_disks;
    char msg[128];
@@ -5286,7 +5329,13 @@ static void command_event_disk_control_set_index(unsigned idx)
          RARCH_ERR("%s\n", msg);
       else
          RARCH_LOG("%s\n", msg);
-      runloop_msg_queue_push(msg, 1, 180, true, NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+
+      /* Errors should always be displayed */
+      if (print_log || error)
+         runloop_msg_queue_push(
+               msg, 1, error ? 180 : 60,
+               true, NULL,
+               MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
    }
 }
 
@@ -5303,8 +5352,17 @@ static bool command_event_disk_control_append_image(const char *path)
    struct retro_game_info info                        = {0};
    const struct retro_disk_control_callback *control  = NULL;
    rarch_system_info_t *sysinfo                       = &runloop_system;
+   const char *disk_filename                          = NULL;
 
    msg[0] = '\0';
+
+   if (string_is_empty(path))
+      return false;
+
+   disk_filename = path_basename(path);
+
+   if (string_is_empty(disk_filename))
+      return false;
 
    if (sysinfo)
       control = (const struct retro_disk_control_callback*)
@@ -5324,9 +5382,12 @@ static bool command_event_disk_control_append_image(const char *path)
    info.path = path;
    control->replace_image_index(new_idx, &info);
 
-   snprintf(msg, sizeof(msg), "%s: %s", msg_hash_to_str(MSG_APPENDED_DISK), path);
+   snprintf(msg, sizeof(msg), "%s: %s", msg_hash_to_str(MSG_APPENDED_DISK), disk_filename);
    RARCH_LOG("%s\n", msg);
-   runloop_msg_queue_push(msg, 0, 180, true, NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+   /* This message should always be displayed, since
+    * the menu itself does not provide sufficient
+    * visual feedback */
+   runloop_msg_queue_push(msg, 0, 120, true, NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
 
 #ifdef HAVE_THREADS
    retroarch_autosave_deinit();
@@ -5344,7 +5405,7 @@ static bool command_event_disk_control_append_image(const char *path)
    }
 
    command_event(CMD_EVENT_AUTOSAVE_INIT, NULL);
-   command_event_disk_control_set_index(new_idx);
+   command_event_disk_control_set_index(new_idx, false);
    command_event_disk_control_set_eject(false, false);
 
    return true;
@@ -5353,11 +5414,12 @@ static bool command_event_disk_control_append_image(const char *path)
 /**
  * command_event_check_disk_prev:
  * @control              : Handle to disk control handle.
+ * @print_log            : Show message onscreen.
  *
  * Perform disk cycle to previous index action (Core Disk Options).
  **/
 static void command_event_check_disk_prev(
-      const struct retro_disk_control_callback *control)
+      const struct retro_disk_control_callback *control, bool print_log)
 {
    unsigned num_disks    = 0;
    unsigned current      = 0;
@@ -5380,17 +5442,18 @@ static void command_event_check_disk_prev(
 
    if (current > 0)
       current--;
-   command_event_disk_control_set_index(current);
+   command_event_disk_control_set_index(current, print_log);
 }
 
 /**
  * command_event_check_disk_next:
  * @control              : Handle to disk control handle.
+ * @print_log            : Show message onscreen.
  *
  * Perform disk cycle to next index action (Core Disk Options).
  **/
 static void command_event_check_disk_next(
-      const struct retro_disk_control_callback *control)
+      const struct retro_disk_control_callback *control, bool print_log)
 {
    unsigned num_disks        = 0;
    unsigned current          = 0;
@@ -5413,7 +5476,7 @@ static void command_event_check_disk_next(
 
    if (current < num_disks - 1)
       current++;
-   command_event_disk_control_set_index(current);
+   command_event_disk_control_set_index(current, print_log);
 }
 
 /**
@@ -6547,8 +6610,10 @@ bool command_event(enum event_command cmd, void *data)
             }
             else
             {
+#ifdef HAVE_ACCESSIBILITY
                if (is_accessibility_enabled())
-                   accessibility_speak((char*) msg_hash_to_str(MSG_UNPAUSED));
+                   accessibility_speak_priority((char*) msg_hash_to_str(MSG_UNPAUSED), 10);
+#endif
                command_event(CMD_EVENT_UNPAUSE, NULL);
             }
          }       
@@ -7250,13 +7315,16 @@ TODO: Add a setting for these tweaks */
       case CMD_EVENT_PAUSE_TOGGLE:
          boolean        = runloop_paused;
          boolean        = !boolean;
+
+#ifdef HAVE_ACCESSIBILITY
          if (is_accessibility_enabled())
          {
             if (boolean)
-               accessibility_speak((char*) msg_hash_to_str(MSG_PAUSED));
+               accessibility_speak_priority((char*) msg_hash_to_str(MSG_PAUSED), 10);
             else
-               accessibility_speak((char*) msg_hash_to_str(MSG_UNPAUSED));
+               accessibility_speak_priority((char*) msg_hash_to_str(MSG_UNPAUSED), 10);
          }
+#endif
 
          runloop_paused = boolean;
          retroarch_pause_checks();
@@ -7515,6 +7583,7 @@ TODO: Add a setting for these tweaks */
       case CMD_EVENT_DISK_EJECT_TOGGLE:
          {
             rarch_system_info_t *info = &runloop_system;
+            bool *show_msg            = (bool*)data;
 
             if (info && info->disk_control_cb.get_num_images)
             {
@@ -7525,7 +7594,20 @@ TODO: Add a setting for these tweaks */
                if (control)
                {
                   bool new_state = !control->get_eject_state();
-                  command_event_disk_control_set_eject(new_state, true);
+                  bool print_log = true;
+                  bool refresh   = false;
+
+                  if (show_msg)
+                     print_log = *show_msg;
+
+                  command_event_disk_control_set_eject(new_state, print_log);
+
+#if defined(HAVE_MENU)
+                  /* It is necessary to refresh the disk options
+                   * menu when toggling the tray state */
+                  menu_entries_ctl(MENU_ENTRIES_CTL_SET_REFRESH, &refresh);
+                  menu_driver_ctl(RARCH_MENU_CTL_SET_PREVENT_POPULATE, NULL);
+#endif
                }
             }
             else
@@ -7538,12 +7620,14 @@ TODO: Add a setting for these tweaks */
       case CMD_EVENT_DISK_NEXT:
          {
             rarch_system_info_t *info = &runloop_system;
+            bool *show_msg            = (bool*)data;
 
             if (info && info->disk_control_cb.get_num_images)
             {
                const struct retro_disk_control_callback *control =
                   (const struct retro_disk_control_callback*)
                   &info->disk_control_cb;
+               bool print_log                                    = true;
 
                if (!control)
                   return false;
@@ -7551,7 +7635,10 @@ TODO: Add a setting for these tweaks */
                if (!control->get_eject_state())
                   return false;
 
-               command_event_check_disk_next(control);
+               if (show_msg)
+                  print_log = *show_msg;
+
+               command_event_check_disk_next(control, print_log);
             }
             else
                runloop_msg_queue_push(
@@ -7563,6 +7650,40 @@ TODO: Add a setting for these tweaks */
       case CMD_EVENT_DISK_PREV:
          {
             rarch_system_info_t *info = &runloop_system;
+            bool *show_msg            = (bool*)data;
+
+            if (info && info->disk_control_cb.get_num_images)
+            {
+               const struct retro_disk_control_callback *control =
+                  (const struct retro_disk_control_callback*)
+                  &info->disk_control_cb;
+               bool print_log                                    = true;
+
+               if (!control)
+                  return false;
+
+               if (!control->get_eject_state())
+                  return false;
+
+               if (show_msg)
+                  print_log = *show_msg;
+
+               command_event_check_disk_prev(control, print_log);
+            }
+            else
+               runloop_msg_queue_push(
+                     msg_hash_to_str(MSG_CORE_DOES_NOT_SUPPORT_DISK_OPTIONS),
+                     1, 120, true,
+                     NULL, MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_INFO);
+         }
+         break;
+      case CMD_EVENT_DISK_INDEX:
+         {
+            rarch_system_info_t *info = &runloop_system;
+            unsigned *index           = (unsigned*)data;
+
+            if (!index)
+               return false;
 
             if (info && info->disk_control_cb.get_num_images)
             {
@@ -7573,10 +7694,9 @@ TODO: Add a setting for these tweaks */
                if (!control)
                   return false;
 
-               if (!control->get_eject_state())
-                  return false;
-
-               command_event_check_disk_prev(control);
+               /* Note: Menu itself provides visual feedback - no
+                * need to print info message to screen */
+               command_event_disk_control_set_index(*index, false);
             }
             else
                runloop_msg_queue_push(
@@ -7718,12 +7838,16 @@ TODO: Add a setting for these tweaks */
          if (settings->uints.ai_service_mode == 1 && is_ai_service_speech_running())
          {
             ai_service_speech_stop();
+#ifdef HAVE_ACCESSIBILITY
             if (is_accessibility_enabled())
-               accessibility_speak("stopped.");
+               accessibility_speak_priority("stopped.", 10);
+#endif
          }
+#ifdef HAVE_ACCESSIBILITY
          else if (is_accessibility_enabled() && settings->uints.ai_service_mode == 2 &&
                   is_narrator_running())
-            accessibility_speak("stopped.");
+            accessibility_speak_priority("stopped.", 10);
+#endif
          else
          {
             RARCH_LOG("AI Service Called...\n");
@@ -16500,13 +16624,6 @@ void input_pad_connect(unsigned port, input_device_driver_t *driver)
 }
 
 #ifdef HAVE_HID
-/**
- * hid_driver_find_handle:
- * @idx                : index of driver to get handle to.
- *
- * Returns: handle to HID driver at index. Can be NULL
- * if nothing found.
- **/
 static const void *hid_driver_find_handle(int idx)
 {
    const void *drv = hid_drivers[idx];
@@ -16761,6 +16878,7 @@ void input_keyboard_event(bool down, unsigned code,
       uint32_t character, uint16_t mod, unsigned device)
 {
    static bool deferred_wait_keys;
+#ifdef HAVE_ACCESSIBILITY
 #ifdef HAVE_MENU
    if (menu_input_dialog_get_display_kb() 
          && down && is_accessibility_enabled())
@@ -16768,85 +16886,86 @@ void input_keyboard_event(bool down, unsigned code,
       if (code != 303 && code != 0)
       {
          char* say_char = (char*) malloc(sizeof(char)+1);
-         if (say_char != NULL)
+         if (say_char)
          {
             char c = (char) character;
             *say_char = c;
 
             if (character == 127)
-               accessibility_speak("backspace");
+               accessibility_speak_priority("backspace", 10);
             else if (c == '`')
-               accessibility_speak("left quote");
+               accessibility_speak_priority("left quote", 10);
             else if (c == '`')
-               accessibility_speak("tilde");
+               accessibility_speak_priority("tilde", 10);
             else if (c == '!')
-               accessibility_speak("exclamation point");
+               accessibility_speak_priority("exclamation point", 10);
             else if (c == '@')
-               accessibility_speak("at sign");
+               accessibility_speak_priority("at sign", 10);
             else if (c == '#')
-               accessibility_speak("hash sign");
+               accessibility_speak_priority("hash sign", 10);
             else if (c == '$')
-               accessibility_speak("dollar sign");
+               accessibility_speak_priority("dollar sign", 10);
             else if (c == '%')
-               accessibility_speak("percent sign");
+               accessibility_speak_priority("percent sign", 10);
             else if (c == '^')
-               accessibility_speak("carrot");
+               accessibility_speak_priority("carrot", 10);
             else if (c == '&')
-               accessibility_speak("ampersand");
+               accessibility_speak_priority("ampersand", 10);
             else if (c == '*')
-               accessibility_speak("asterisk");
+               accessibility_speak_priority("asterisk", 10);
             else if (c == '(')
-               accessibility_speak("left bracket");
+               accessibility_speak_priority("left bracket", 10);
             else if (c == ')')
-               accessibility_speak("right bracket");
+               accessibility_speak_priority("right bracket", 10);
             else if (c == '-')
-               accessibility_speak("minus");
+               accessibility_speak_priority("minus", 10);
             else if (c == '_')
-               accessibility_speak("underscore");
+               accessibility_speak_priority("underscore", 10);
             else if (c == '=')
-               accessibility_speak("equals");
+               accessibility_speak_priority("equals", 10);
             else if (c == '+')
-               accessibility_speak("plus");
+               accessibility_speak_priority("plus", 10);
             else if (c == '[')
-               accessibility_speak("left square bracket");
+               accessibility_speak_priority("left square bracket", 10);
             else if (c == '{')
-               accessibility_speak("left curl bracket");
+               accessibility_speak_priority("left curl bracket", 10);
             else if (c == ']')
-               accessibility_speak("right square bracket");
+               accessibility_speak_priority("right square bracket", 10);
             else if (c == '}')
-               accessibility_speak("right curl bracket");
+               accessibility_speak_priority("right curl bracket", 10);
             else if (c == '\\')
-               accessibility_speak("back slash");
+               accessibility_speak_priority("back slash", 10);
             else if (c == '|')
-               accessibility_speak("pipe");
+               accessibility_speak_priority("pipe", 10);
             else if (c == ';')
-               accessibility_speak("semicolon");
+               accessibility_speak_priority("semicolon", 10);
             else if (c == ':')
-               accessibility_speak("colon");
+               accessibility_speak_priority("colon", 10);
             else if (c == '\'')
-               accessibility_speak("single quote");
+               accessibility_speak_priority("single quote", 10);
             else if (c  == '\"')
-               accessibility_speak("double quote");
+               accessibility_speak_priority("double quote", 10);
             else if (c == ',')
-               accessibility_speak("comma");
+               accessibility_speak_priority("comma", 10);
             else if (c == '<')
-               accessibility_speak("left angle bracket");
+               accessibility_speak_priority("left angle bracket", 10);
             else if (c == '.')
-               accessibility_speak("period");
+               accessibility_speak_priority("period", 10);
             else if (c == '>')
-               accessibility_speak("right angle bracket");
+               accessibility_speak_priority("right angle bracket", 10);
             else if (c == '/')
-               accessibility_speak("front slash");
+               accessibility_speak_priority("front slash", 10);
             else if (c == '?')
-               accessibility_speak("question mark");
+               accessibility_speak_priority("question mark", 10);
             else if (c == ' ')
-               accessibility_speak("space");
+               accessibility_speak_priority("space", 10);
             else if (character != 0)
-               accessibility_speak(say_char);
+               accessibility_speak_priority(say_char, 10);
             free(say_char);
          }
       }
    }
+#endif
 #endif
 
    if (deferred_wait_keys)
@@ -21892,10 +22011,11 @@ static void video_driver_frame(const void *data, unsigned width,
 #endif
    }
 
-   video_driver_active = current_video->frame(
-         video_driver_data, data, width, height,
-         video_driver_frame_count,
-         (unsigned)pitch, video_driver_msg, &video_info);
+   if (current_video && current_video->frame)
+      video_driver_active = current_video->frame(
+            video_driver_data, data, width, height,
+            video_driver_frame_count,
+            (unsigned)pitch, video_driver_msg, &video_info);
 
    video_driver_frame_count++;
 
@@ -25093,7 +25213,9 @@ static void retroarch_parse_input_and_config(int argc, char *argv[])
                retroarch_print_help(argv[0]);
                retroarch_fail(1, "retroarch_parse_input()");
             case RA_OPT_ACCESSIBILITY:
+#ifdef HAVE_ACCESSIBILITY
                accessibility_enabled = true;
+#endif
                break;
             default:
                RARCH_ERR("%s\n", msg_hash_to_str(MSG_ERROR_PARSING_ARGUMENTS));
@@ -25293,8 +25415,10 @@ bool retroarch_main_init(int argc, char *argv[])
 
    retroarch_parse_input_and_config(argc, argv);
 
+#ifdef HAVE_ACCESSIBILITY
    if (is_accessibility_enabled())
       accessibility_startup_message();
+#endif
 
    if (verbosity_is_enabled())
    {
@@ -26604,8 +26728,10 @@ void runloop_msg_queue_push(const char *msg,
       enum message_queue_category category)
 {
    runloop_msg_queue_lock();
+#ifdef HAVE_ACCESSIBILITY
    if (is_accessibility_enabled())
       accessibility_speak_priority((char*) msg, 0);
+#endif
 #if defined(HAVE_MENU) && defined(HAVE_MENU_WIDGETS)
    if (menu_widgets_inited)
    {
@@ -29246,6 +29372,7 @@ bool core_has_set_input_descriptor(void)
    return current_core.has_set_input_descriptors;
 }
 
+#if defined(HAVE_RUNAHEAD)
 static void core_free_retro_game_info(struct retro_game_info *dest)
 {
    if (!dest)
@@ -29260,6 +29387,7 @@ static void core_free_retro_game_info(struct retro_game_info *dest)
    dest->data = NULL;
    dest->meta = NULL;
 }
+#endif
 
 unsigned int retroarch_get_rotation(void)
 {
@@ -29267,17 +29395,6 @@ unsigned int retroarch_get_rotation(void)
    return settings->uints.video_rotation + runloop_system.rotation;
 }
 
-
-/* Accessibility */
-int speak_pid = 0;
-
-bool is_accessibility_enabled(void)
-{
-   settings_t *settings              = configuration_settings;
-   if (accessibility_enabled || settings->bools.accessibility_enable)
-      return true;
-   return false;
-}
 
 bool is_input_keyboard_display_on(void)
 { 
@@ -29288,18 +29405,14 @@ bool is_input_keyboard_display_on(void)
 #endif
 }
 
-bool accessibility_speak(const char* speak_text)
-{
-   return accessibility_speak_priority(speak_text, 10);
-}
-
-
 #if defined(__MACH__) && defined(__APPLE__) 
 #include <TargetConditionals.h>
 #if TARGET_OS_OSX && !defined(EMSCRIPTEN)
 #define _IS_OSX
 #endif
 #endif
+
+#ifdef HAVE_ACCESSIBILITY
 
 #if defined(_IS_OSX)
 static char* accessibility_mac_language_code(const char* language)
@@ -29368,7 +29481,7 @@ static char* accessibility_mac_language_code(const char* language)
       return "";
 }
 
-bool is_narrator_running_macos(void)
+static bool is_narrator_running_macos(void)
 {
    if (kill(speak_pid, 0) == 0)
       return true;
@@ -29443,7 +29556,6 @@ static bool accessibility_speak_macos(
 #endif
 
 #if defined(_WIN32) && !defined(_XBOX) && !defined(__WINRT__) && !defined(EMSCRIPTEN)
-
 static const char *accessibility_win_language_code(const char* language)
 {
    if (string_is_equal(language,"en"))
@@ -29530,11 +29642,7 @@ static bool create_win32_process(char* cmd)
 
    if (!CreateProcess(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
                       NULL, NULL, &si, &pi))
-   {
-      pi_set = false;
       return false;
-   }
-   pi_set = true;
    return true;
 }
 
@@ -29584,22 +29692,23 @@ static bool accessibility_speak_windows(
    if (!res)
    {
       RARCH_LOG("Create subprocess failed. Error: %d\n", GetLastError()); 
+      pi_set = false;
+      return true;
    }
+   pi_set = true;
    return true;
 }
 #endif
 
 #if (defined(__linux__) || defined(__unix__)) && !defined(EMSCRIPTEN)
-
-
-bool is_narrator_running_linux(void)
+static bool is_narrator_running_linux(void)
 {
    if (kill(speak_pid, 0) == 0)
       return true;
    return false;
 }
 
-bool accessibility_speak_linux(
+static bool accessibility_speak_linux(
       const char* speak_text, const char* language, int priority)
 {
    int pid;
@@ -29696,7 +29805,8 @@ bool accessibility_speak_priority(const char* speak_text, int priority)
    return true;
 }
 
-bool is_narrator_running(void)
+#ifdef HAVE_ACCESSIBILITY
+static bool is_narrator_running(void)
 {
    if (is_accessibility_enabled())
    {
@@ -29710,9 +29820,11 @@ bool is_narrator_running(void)
    }
    return true;
 }
+#endif
 
-
-bool accessibility_speak_ai_service(const char* speak_text, const char* language, int priority)
+#if 0
+static bool accessibility_speak_ai_service(
+      const char* speak_text, const char* language, int priority)
 {
 #if defined(HAVE_NETWORKING) && defined(HAVE_TRANSLATE)
    /* Call the AI service listed to do espeak for us. */ 
@@ -29729,7 +29841,7 @@ bool accessibility_speak_ai_service(const char* speak_text, const char* language
    strlcpy(new_ai_service_url, settings->arrays.ai_service_url, 
            sizeof(new_ai_service_url));
 
-   if (strrchr(new_ai_service_url, '?') != NULL)
+   if (strrchr(new_ai_service_url, '?'))
       separator = '&';
    snprintf(temp_string, sizeof(temp_string),
             "%csource_lang=%s&target_lang=%s&output=espeak", 
@@ -29753,11 +29865,15 @@ bool accessibility_speak_ai_service(const char* speak_text, const char* language
    return false;
 #endif
 }
+#endif
 
-bool accessibility_startup_message(void)
+static bool accessibility_startup_message(void)
 {
    /* State that the narrator is on, and also include the first menu 
       item we're on at startup. */
-   accessibility_speak("RetroArch accessibility on.  Main Menu Load Core.");
+   accessibility_speak_priority(
+         "RetroArch accessibility on.  Main Menu Load Core.",
+         10);
    return true;
 }
+#endif
