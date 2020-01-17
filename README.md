@@ -34,3 +34,7 @@ https://forums.libretro.com/t/ios-jailbroken-retroarch-1-8-1-and-other-emulators
 
 http://johan.margueritte.free.fr/buildbot/ios-arm64
 http://johan.margueritte.free.fr/buildbot/tvos-arm64/
+
+
+### Other build
+http://johan.margueritte.free.fr/iosemu
